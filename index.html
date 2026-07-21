@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>micro:bit UART 送信コントローラー（完成版）</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin-top: 30px; background-color: #f5f5f5; color: #333; }
+        h1 { font-size: 20px; }
+        button { padding: 12px 24px; font-size: 16px; margin: 8px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; background-color: #fff; transition: 0.2s; }
+        button:hover { background-color: #eaeaea; }
+        button:disabled { background-color: #e0e0e0; cursor: not-allowed; color: #999; }
+        #connectBtn { background-color: #0078D7; color: white; border: none; }
+        #connectBtn:hover { background-color: #005a9e; }
+        #disconnectBtn { background-color: #d9534f; color: white; border: none; }
+        #status { margin: 15px; font-weight: bold; font-size: 16px; color: #0078D7; }
+        .control-panel { margin-top: 20px; padding: 20px; background-color: #fff; border-radius: 8px; display: inline-block; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        #log-container { margin: 20px auto; max-width: 600px; text-align: left; }
+        #log { background: #222; color: #0f0; font-family: monospace; padding: 10px; height: 150px; overflow-y: scroll; border-radius: 5px; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+    <h1>micro:bit UART コントローラー (完成版)</h1>
+    
+    <div id="status">ステータス: 未接続</div>
+
+    <div>
+        <button id="connectBtn">micro:bit と接続</button>
+        <button id="disconnectBtn" disabled>切断</button>
+    </div>
+
+    <div class="control-panel">
+        <p style="margin-top:0; font-weight:bold; font-size:14px; color:#666;">コマンド送信 (改行コード \\n 自動付与)</p>
+        <button id="btnRight" class="cmd-btn" disabled>右 (right) を送信</button>
+        <button id="btnLeft" class="cmd-btn" disabled>左 (left) を送信</button>
+        <button id="btnOther" class="cmd-btn" disabled>その他 (stop) を送信</button>
+    </div>
+
+    <div id="log-container">
+        <div style="font-weight: bold; font-size: 12px; color: #666; margin-bottom: 5px;">⚙ 動作ログ:</div>
+        <div id="log"></div>
+    </div>
+
+    <script>
+        // 【完全解決】正しいサービスUUIDと、書き込み専用窓口（末尾3）の組み合わせ
+        const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+        const UART_RX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // ★末尾を「3」に修正！
+
+        let bluetoothDevice;
+        let txCharacteristic;
+
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const statusDiv = document.getElementById('status');
+        const cmdButtons = document.querySelectorAll('.cmd-btn');
+        const logDiv = document.getElementById('log');
+
+        function writeLog(message, isError = false) {
+            const time = new Date().toLocaleTimeString();
+            const color = isError ? '#ff4d4d' : '#00ff00';
+            logDiv.innerHTML += `<span style="color: #aaa;">[${time}]</span> <span style="color: ${color};">${message}</span><br>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // 接続処理
+        connectBtn.addEventListener('click', async () => {
+            try {
+                statusDiv.innerText = 'ステータス: デバイスを探しています...';
+                
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [UART_SERVICE_UUID]
+                });
+
+                bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+                statusDiv.innerText = 'ステータス: 接続中...';
+                const server = await bluetoothDevice.gatt.connect();
+                const service = await server.getPrimaryService(UART_SERVICE_UUID);
+                
+                // 正しい書き込み窓口（末尾3）を取得
+                txCharacteristic = await service.getCharacteristic(UART_RX_CHARACTERISTIC_UUID);
+
+                statusDiv.innerText = 'ステータス: 接続完了！';
+                statusDiv.style.color = '#5cb85c';
+                
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                cmdButtons.forEach(btn => btn.disabled = false);
+                
+                writeLog('micro:bit UARTサービスに正常に接続されました！');
+            } catch (error) {
+                writeLog(`接続エラー: ${error.message}`, true);
+                statusDiv.innerText = 'ステータス: 接続エラー';
+                statusDiv.style.color = '#d9534f';
+            }
+        });
+
+        // 切断処理
+        disconnectBtn.addEventListener('click', () => {
+            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                bluetoothDevice.gatt.disconnect();
+            }
+        });
+
+        function onDisconnected() {
+            statusDiv.innerText = 'ステータス: 切断されました';
+            statusDiv.style.color = '#d9534f';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            cmdButtons.forEach(btn => btn.disabled = true);
+            txCharacteristic = null;
+            writeLog('切断されました。', true);
+        }
+
+        // 送信処理
+        async function sendCommand(command) {
+            if (!txCharacteristic) return;
+            try {
+                const textEncoder = new TextEncoder();
+                const data = textEncoder.encode(command + '\n'); 
+                
+                writeLog(`「${command}」を送信中...`);
+
+                // 正しい窓口なので、writeValue で問題なく受け付けられます
+                await txCharacteristic.writeValue(data);
+                
+                writeLog(`➡ micro:bitへ「${command}」の送信に成功しました！`);
+            } catch (error) {
+                writeLog(`送信エラー: ${error.message}`, true);
+            }
+        }
+
+        document.getElementById('btnRight').addEventListener('click', () => sendCommand('Right'));
+        document.getElementById('btnLeft').addEventListener('click', () => sendCommand('Left'));
+        document.getElementById('btnOther').addEventListener('click', () => sendCommand('stop'));
+
+        writeLog('アプリが起動しました。');
+    </script>
+</body>
+</html>
